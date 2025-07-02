@@ -15,33 +15,21 @@ namespace AngelScriptHelper
 	/// </summary>
 	internal sealed class AngelScriptFile_TextAdornment
 	{
-		/// <summary>
-		/// The layer of the adornment.
-		/// </summary>
 		private readonly IAdornmentLayer layer;
-
-		/// <summary>
-		/// Text view where the adornment is created.
-		/// </summary>
 		private readonly IWpfTextView view;
 
-		/// <summary>
-		/// Adornment brush.
-		/// </summary>
 		private readonly Brush ErrorBrush;
-
 		private readonly Brush SuccessBrush;
-
-		/// <summary>
-		/// Adornment pen.
-		/// </summary>
 		private readonly Pen ErrorPen;
 
-		public string FilePath;
+		private string FilePath;
 		private bool bDiagnosticDirty = false;
+
 		private object TagCompileSuccessObject = new object();
+		private bool bHasTagCompileSuccess = false;
 
 		private object TagErrors = new object();
+		private bool bHasTagErrors = false;
 
 		/// <summary>
 		/// Initializes a new instance of the <see cref="AngelScriptFile_TextAdornment"/> class.
@@ -50,11 +38,6 @@ namespace AngelScriptHelper
 		public AngelScriptFile_TextAdornment(IWpfTextView view, string InFilePath)
 		{
 			FilePath = InFilePath;
-
-			if (view == null)
-			{
-				throw new ArgumentNullException("view");
-			}
 
 			// Get the ITextBuffer from the IWpfTextView
 			this.view = view;
@@ -82,16 +65,20 @@ namespace AngelScriptHelper
 					return;
 
 				bDiagnosticDirty = true;
-				this.view.VisualElement.Dispatcher.Invoke(() =>
+				ThreadHelper.JoinableTaskFactory.Run(async delegate
 				{
-					this.view.VisualElement.InvalidateVisual();
-					this.view.VisualElement.UpdateLayout();
+					await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+					RefreshAll();
 				});
 			};
 		}
 		private void OnTextBufferChanged(object sender, TextContentChangedEventArgs e)
 		{
-			this.layer.RemoveAdornmentsByTag(TagCompileSuccessObject);
+			if (bHasTagCompileSuccess)
+			{
+				this.layer.RemoveAdornmentsByTag(TagCompileSuccessObject);
+				bHasTagCompileSuccess = false;
+			}
 		}
 
 		/// <summary>
@@ -103,67 +90,80 @@ namespace AngelScriptHelper
 		/// </remarks>
 		/// <param name="sender">The event sender.</param>
 		/// <param name="e">The event arguments.</param>
-		internal void OnLayoutChanged(object sender, TextViewLayoutChangedEventArgs e)
+		internal void OnLayoutChanged(object sender, TextViewLayoutChangedEventArgs textViewLayoutChangedEventArgs)
 		{
-			if (bDiagnosticDirty && e.NewOrReformattedLines.Count == 0)
+			if (bDiagnosticDirty && textViewLayoutChangedEventArgs.NewOrReformattedLines.Count == 0)
 			{
-				bDiagnosticDirty = false;
-				this.layer.RemoveAdornmentsByTag(TagErrors);
-				this.layer.RemoveAdornmentsByTag(TagCompileSuccessObject);
-
-				bool bHasMesssage = CAngelScriptManager.Instance().mDebugClient.DiagnosticsMessageMap.TryGetValue(FilePath, out CDiagnosticsMessage DiagnosticMessage);
-				if (!bHasMesssage)
-					return;
-
-				if (DiagnosticMessage.Diagnostics.Count == 0)
-				{
-					Rect viewportRect = new Rect(0, 0, this.view.ViewportWidth, this.view.ViewportHeight);
-					Geometry viewportGeometry = new RectangleGeometry(viewportRect);
-
-					if (viewportGeometry != null)
-					{
-						var drawing = new GeometryDrawing(this.SuccessBrush, this.ErrorPen, viewportGeometry);
-						drawing.Freeze();
-
-						var drawingImage = new DrawingImage(drawing);
-						drawingImage.Freeze();
-
-						var image = new Image
-						{
-							Source = drawingImage,
-						};
-
-						// Align the image with the top of the bounds of the text geometry
-						Canvas.SetLeft(image, viewportGeometry.Bounds.Left);
-						Canvas.SetTop(image, viewportGeometry.Bounds.Top);
-
-						this.layer.AddAdornment(AdornmentPositioningBehavior.ViewportRelative, null, TagCompileSuccessObject, image, null);
-					}
-					return;
-				}
-
-				for (int LineNumber = 0; LineNumber < e.NewSnapshot.LineCount; ++LineNumber)
-				{
-					this.CreateVisuals(LineNumber);
-				}
-				return;
+				RefreshAll();
 			}
 
 			{
-				bool bHasMesssage = CAngelScriptManager.Instance().mDebugClient.DiagnosticsMessageMap.TryGetValue(FilePath, out CDiagnosticsMessage DiagnosticMessage);
+				bool bHasMesssage = CAngelScriptManager.Instance().GetDiagnosticsMessageMap().TryGetValue(FilePath, out CDiagnosticsMessage DiagnosticMessage);
 				if (!bHasMesssage || DiagnosticMessage.Diagnostics.Count == 0)
 					return;
 
-				foreach (ITextViewLine line in e.NewOrReformattedLines)
+				foreach (ITextViewLine line in textViewLayoutChangedEventArgs.NewOrReformattedLines)
 				{
 					this.CreateVisuals(line.Start.GetContainingLineNumber());
 				}
 			}
 		}
 
+		private void RefreshAll()
+		{
+			bDiagnosticDirty = false;
+			if (bHasTagErrors)
+			{
+				this.layer.RemoveAdornmentsByTag(TagErrors);
+				bHasTagErrors = false;
+			}
+			if (bHasTagCompileSuccess)
+			{
+				this.layer.RemoveAdornmentsByTag(TagCompileSuccessObject);
+				bHasTagCompileSuccess = false;
+			}
+
+			bool bHasMesssage = CAngelScriptManager.Instance().GetDiagnosticsMessageMap().TryGetValue(FilePath, out CDiagnosticsMessage DiagnosticMessage);
+			if (!bHasMesssage)
+				return;
+
+			if (DiagnosticMessage.Diagnostics.Count == 0)
+			{
+				Rect viewportRect = new Rect(0, 0, this.view.ViewportWidth, this.view.ViewportHeight);
+				Geometry viewportGeometry = new RectangleGeometry(viewportRect);
+
+				if (viewportGeometry != null)
+				{
+					var drawing = new GeometryDrawing(this.SuccessBrush, this.ErrorPen, viewportGeometry);
+					drawing.Freeze();
+
+					var drawingImage = new DrawingImage(drawing);
+					drawingImage.Freeze();
+
+					var image = new Image
+					{
+						Source = drawingImage,
+					};
+
+					// Align the image with the top of the bounds of the text geometry
+					Canvas.SetLeft(image, viewportGeometry.Bounds.Left);
+					Canvas.SetTop(image, viewportGeometry.Bounds.Top);
+
+					this.layer.AddAdornment(AdornmentPositioningBehavior.ViewportRelative, null, TagCompileSuccessObject, image, null);
+					bHasTagCompileSuccess = true;
+				}
+				return;
+			}
+
+			for (int LineNumber = 0; LineNumber < this.view.TextSnapshot.LineCount; ++LineNumber)
+			{
+				this.CreateVisuals(LineNumber);
+			}
+		}
+
 		private void CreateVisuals(int LineNumber)
 		{
-			bool bHasMesssage = CAngelScriptManager.Instance().mDebugClient.DiagnosticsMessageMap.TryGetValue(FilePath, out CDiagnosticsMessage DiagnosticMessage);
+			bool bHasMesssage = CAngelScriptManager.Instance().GetDiagnosticsMessageMap().TryGetValue(FilePath, out CDiagnosticsMessage DiagnosticMessage);
 			if (!bHasMesssage || DiagnosticMessage.Diagnostics.Count == 0)
 				return;
 
@@ -206,16 +206,16 @@ namespace AngelScriptHelper
 					Canvas.SetTop(image, geometry.Bounds.Top);
 
 					this.layer.AddAdornment(AdornmentPositioningBehavior.TextRelative, span, TagErrors, image, null);
+					bHasTagErrors = true;
 					bAlreadyCreatedVisual = true;
 				}
 			}
 
-			if (span.HasValue)
+			if (span != null && span.HasValue)
 			{
 				Geometry geometry = textViewLines.GetMarkerGeometry(span.Value);
 				if (geometry != null)
 				{
-
 					// Create a label with the text adornment
 					TextBlock adornmentText = new TextBlock
 					{
@@ -232,6 +232,7 @@ namespace AngelScriptHelper
 
 					// Add the adornment to the adornment layer
 					this.layer.AddAdornment(AdornmentPositioningBehavior.TextRelative, span, TagErrors, adornmentText, null);
+					bHasTagErrors = true;
 				}
 			}
 		}

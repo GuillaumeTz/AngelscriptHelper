@@ -1,4 +1,5 @@
 ﻿using Microsoft.VisualStudio.RpcContracts.DiagnosticManagement;
+using Microsoft.VisualStudio.Shell;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -161,6 +162,7 @@ namespace AngelScriptHelper
 		private TcpClient mSocket = null;
 		private NetworkStream mSocketStream = null;
 		private DateTime mLastTimeCheckedAlive = DateTime.Now;
+		private bool bIsConnecting = false;
 
 		public Dictionary<string, CDiagnosticsMessage> DiagnosticsMessageMap = new Dictionary<string, CDiagnosticsMessage>();
 		public event EventHandler OnDiagnosticsChanged;
@@ -172,24 +174,49 @@ namespace AngelScriptHelper
 		{
 			Disconnect(true);
 
+			if (mSocket == null)
+			{
+				mSocket = new TcpClient();
+			}
+
 			try
 			{
-				mSocket = new TcpClient(HostName, Port);
-				mSocketStream = mSocket.GetStream();
-				mSocketStream.ReadTimeout = 1;
+				bIsConnecting = true;
+				mSocket.BeginConnect(HostName, Port, OnConnectAsyncCallback, null);
 			}
 			catch (System.Exception)
 			{
-				
+			}
+		}
+		private void OnConnectAsyncCallback(IAsyncResult AsyncResult)
+		{
+			try
+			{
+				mSocket.EndConnect(AsyncResult);
+			}
+			catch (System.Exception)
+			{
+			}
+
+			bIsConnecting = false;
+			if (mSocket.Connected)
+			{
+				mSocketStream = mSocket.GetStream();
+				mSocketStream.ReadTimeout = 1;
 			}
 		}
 
 		public bool IsConnected() 
 		{
-			if (mSocket == null || !mSocket.Connected)
+			if (mSocket == null || !mSocket.Connected || mSocketStream == null)
 				return false;
 
 			return !(mSocket.Client.Poll(1000, SelectMode.SelectRead) && mSocket.Client.Available == 0);
+		}
+
+		public bool IsConnecting()
+		{
+			return bIsConnecting;
 		}
 
 		public void Tick()
@@ -244,7 +271,7 @@ namespace AngelScriptHelper
 			}
 
 			// Wait a little to emit event diagnostics changed
-			if (bDiagnosticsDirty && (DateTime.Now - mLastTimeDiagnosticsDirty).Seconds > 1)
+			if (bDiagnosticsDirty && (DateTime.Now - mLastTimeDiagnosticsDirty).Seconds > 1 && OnDiagnosticsChanged != null)
 			{
 				OnDiagnosticsChanged.Invoke(this, null);
 				bDiagnosticsDirty = false;
@@ -293,20 +320,33 @@ namespace AngelScriptHelper
 
 		public void Disconnect(bool bNotify)
 		{
-			if (mSocket == null)
-				return;
+			bIsConnecting = false;
+			DiagnosticsMessageMap.Clear();
+			if (OnDiagnosticsChanged != null)
+				OnDiagnosticsChanged.Invoke(this, null);
 
-			if (bNotify)
+			if (IsConnected() && bNotify)
+			{
 				Send(EMessageType.Disconnect);
+			}
 
-			mSocketStream = null;
-			mSocket = null;
+			if (mSocketStream != null)
+			{
+				mSocketStream.Close();
+				mSocketStream = null;
+			}
+
+			if (mSocket != null)
+			{
+				mSocket.Close();
+				mSocket = null;
+			}
 		}
 	}
 
 	class CAngelScriptManager
 	{
-		public CDebugClient mDebugClient;
+		private CDebugClient mDebugClient = new CDebugClient();
 
 		private static CAngelScriptManager mInstance = null;
 		private static SpinLock mInstanceLock = new SpinLock();
@@ -316,18 +356,20 @@ namespace AngelScriptHelper
 
 		public event EventHandler OnDiagnosticsChanged;
 
-		System.Timers.Timer TickTimer;
+		System.Timers.Timer TickTimer = new System.Timers.Timer();
 
 		private CAngelScriptManager()
 		{
-			TickTimer = new System.Timers.Timer();
 			TickTimer.Elapsed += new ElapsedEventHandler(OnTimedEvent);
-			TickTimer.Interval = 100;
+			TickTimer.Interval = 500;
 			TickTimer.AutoReset = false;
 			TickTimer.Start();
 
-			mDebugClient = new CDebugClient();
-			mDebugClient.OnDiagnosticsChanged += (s, e) => { HandleDiagnosticsChanged(e); };
+			mDebugClient.OnDiagnosticsChanged += (s, e) =>
+			{
+				ThreadHelper.ThrowIfNotOnUIThread();
+				HandleDiagnosticsChanged(e);
+			};
 		}
 
 		public static CAngelScriptManager Instance()
@@ -352,51 +394,57 @@ namespace AngelScriptHelper
 
 		static void OnTimedEvent(object source, ElapsedEventArgs e)
 		{
-			Instance().Tick();
+			ThreadHelper.JoinableTaskFactory.Run(async delegate
+			{
+				await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+				Instance().Tick();
+			});
 		}
 
 		void HandleDiagnosticsChanged(EventArgs e)
 		{
-			if (OnDiagnosticsChanged != null) 
+			if (OnDiagnosticsChanged != null)
 				OnDiagnosticsChanged.Invoke(this, e);
 
 			CErrorListHelper.Instance().ClearErrors();
+			bool bHasErrors = false;
 			foreach (KeyValuePair<string, CDiagnosticsMessage> DiagnosticPair in mDebugClient.DiagnosticsMessageMap)
 			{
 				foreach (CAngelscriptDiagnostic Diagnostic in DiagnosticPair.Value.Diagnostics)
 				{
+					bHasErrors = true;
+					ThreadHelper.ThrowIfNotOnUIThread();
 					CErrorListHelper.Instance().AddError(Diagnostic.message, DiagnosticPair.Value.FilePath, Diagnostic.Start.LineNumber, Diagnostic.Start.CharacterInLine);
 				}
 			}
-			CErrorListHelper.Instance().ShowErrorList();
+
+			if (bHasErrors)
+			{
+				CErrorListHelper.Instance().ShowErrorList();
+			}
+		}
+
+		public Dictionary<string, CDiagnosticsMessage>  GetDiagnosticsMessageMap()
+		{
+			return mDebugClient.DiagnosticsMessageMap;
 		}
 
 		void Tick()
 		{
-			bool bEntered = false;
-			try
+			if (!mDebugClient.IsConnected())
 			{
-				mLock.TryEnter(ref bEntered);
-				if (bEntered)
+				if ((DateTime.Now - LastTimeTryConnect).Seconds >= 1)
 				{
-					if (!mDebugClient.IsConnected())
+					LastTimeTryConnect = DateTime.Now;
+					if (!mDebugClient.IsConnecting())
 					{
-						if ((DateTime.Now - LastTimeTryConnect).Seconds >= 1)
-						{
-							LastTimeTryConnect = DateTime.Now;
-							mDebugClient.Connect("127.0.0.1", 27099);
-						}
-					}
-					else
-					{
-						mDebugClient.Tick();
+						mDebugClient.Connect("127.0.0.1", 27099);
 					}
 				}
 			}
-			finally
+			else
 			{
-				if (bEntered)
-					mLock.Exit();
+				mDebugClient.Tick();
 			}
 
 			TickTimer.Start();

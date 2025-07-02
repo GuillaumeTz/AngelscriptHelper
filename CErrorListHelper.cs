@@ -28,8 +28,9 @@ namespace AngelScriptHelper
 		}
 
 		public static void Init(IServiceProvider ServiceProvider)
-		{
-			mInstance = new CErrorListHelper(ServiceProvider);
+		{	
+			if (mInstance == null)
+				mInstance = new CErrorListHelper(ServiceProvider);
 		}
 
 		public static CErrorListHelper Instance()
@@ -56,7 +57,11 @@ namespace AngelScriptHelper
 			};
 
 			// Set navigation action when the user double-clicks the error
-			errorTask.Navigate += (s, e) => NavigateToFile(filePath, line, column);
+			errorTask.Navigate += (s, e) =>
+			{
+				ThreadHelper.ThrowIfNotOnUIThread();
+				NavigateToFile(filePath, line, column);
+			};
 
 			// Add the error task to the provider
 			_errorListProvider.Tasks.Add(errorTask);
@@ -95,7 +100,7 @@ namespace AngelScriptHelper
 			ThreadHelper.ThrowIfNotOnUIThread();
 
 			DTE2 dte = ServiceProvider.GlobalProvider.GetService(typeof(DTE)) as DTE2;
-			if (dte == null)
+			if (dte == null || dte.Documents == null)
 				return;
 
 			// Get the opened document

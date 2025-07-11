@@ -13,7 +13,7 @@ namespace AngelScriptHelper
 	/// <summary>
 	/// TextAdornment1 places red boxes behind all the "a"s in the editor window
 	/// </summary>
-	internal sealed class AngelScriptFile_TextAdornment
+	internal sealed class AngelScriptFile_TextAdornment : IDisposable
 	{
 		private readonly IAdornmentLayer layer;
 		private readonly IWpfTextView view;
@@ -41,11 +41,14 @@ namespace AngelScriptHelper
 
 			// Get the ITextBuffer from the IWpfTextView
 			this.view = view;
-			this.view.TextBuffer.Changed += OnTextBufferChanged;
-
 			this.layer = this.view.GetAdornmentLayer("AngelScriptFile_TextAdornment");
 
-			this.view.LayoutChanged += this.OnLayoutChanged;
+			this.view.TextBuffer.Changed += OnTextBufferChanged;
+			this.view.LayoutChanged += OnLayoutChanged;
+			this.view.Closed += (sender, e) =>
+			{
+				this.Dispose();
+			};
 
 			// Create the pen and brush to color the box behind the a's
 			this.ErrorBrush = new SolidColorBrush(Color.FromArgb(0x40, 0x00, 0x00, 0xff));
@@ -59,19 +62,33 @@ namespace AngelScriptHelper
 			this.ErrorPen = new Pen(penBrush, 0.5);
 			this.ErrorPen.Freeze();
 
-			CAngelScriptManager.Instance().OnDiagnosticsChanged += (s, e) =>
-			{
-				if (bDiagnosticDirty)
-					return;
-
-				bDiagnosticDirty = true;
-				ThreadHelper.JoinableTaskFactory.Run(async delegate
-				{
-					await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-					RefreshAll();
-				});
-			};
+			CAngelScriptManager.Instance().OnDiagnosticsChanged += OnDiagnosticsChanged;
 		}
+
+		private void OnDiagnosticsChanged(object sender, EventArgs e)
+		{
+			if (bDiagnosticDirty)
+				return;
+
+			bDiagnosticDirty = true;
+			ThreadHelper.JoinableTaskFactory.Run(async delegate
+			{
+				await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+				RefreshAll();
+			});
+		}
+
+		// Implement IDisposable.
+		// Do not make this method virtual.
+		// A derived class should not be able to override this method.
+		public void Dispose()
+		{
+			this.view.TextBuffer.Changed -= OnTextBufferChanged;
+			this.view.LayoutChanged -= OnLayoutChanged;
+			CAngelScriptManager.Instance().OnDiagnosticsChanged -= OnDiagnosticsChanged;
+			GC.SuppressFinalize(this);
+		}
+
 		private void OnTextBufferChanged(object sender, TextContentChangedEventArgs e)
 		{
 			if (bHasTagCompileSuccess)

@@ -104,11 +104,18 @@ namespace AngelScriptHelper
 				return;
 
 			// Get the opened document
-			Document doc = dte.Documents.Item(filePath);
-			if (doc != null)
+			try
 			{
-				TextSelection selection = (TextSelection)doc.Selection;
-				selection.MoveToLineAndOffset(line, column);
+				Document doc = dte.Documents.Item(filePath);
+				if (doc != null)
+				{
+					TextSelection selection = (TextSelection)doc.Selection;
+					selection.MoveToLineAndOffset(line, column);
+				}
+			}
+			catch (Exception)
+			{
+
 			}
 		}
 	}

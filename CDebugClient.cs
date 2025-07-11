@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -12,6 +13,30 @@ using System.Timers;
 
 namespace AngelScriptHelper
 {
+	class CUtils
+	{
+		public static void MemSet(byte[] array, byte value)
+		{
+			if (array == null)
+			{
+				throw new ArgumentNullException("array");
+			}
+			const int blockSize = 4096; // bigger may be better to a certain extent
+			int index = 0;
+			int length = Math.Min(blockSize, array.Length);
+			while (index < length)
+			{
+				array[index++] = value;
+			}
+			length = array.Length;
+			while (index < length)
+			{
+				Buffer.BlockCopy(array, 0, array, index, Math.Min(blockSize, length - index));
+				index += blockSize;
+			}
+		}
+	}
+
 	enum EMessageType
 	{
 		Diagnostics = 0,
@@ -165,7 +190,7 @@ namespace AngelScriptHelper
 		private bool bIsConnecting = false;
 
 		public Dictionary<string, CDiagnosticsMessage> DiagnosticsMessageMap = new Dictionary<string, CDiagnosticsMessage>();
-		public event EventHandler OnDiagnosticsChanged;
+		public event EventHandler OnDiagnosticsChanged = null;
 
 		private bool bDiagnosticsDirty = false;
 		private DateTime mLastTimeDiagnosticsDirty = DateTime.Now;
@@ -208,10 +233,19 @@ namespace AngelScriptHelper
 
 		public bool IsConnected() 
 		{
-			if (mSocket == null || !mSocket.Connected || mSocketStream == null)
-				return false;
+			try
+			{
+				if (mSocket == null || !mSocket.Connected || mSocketStream == null)
+					return false;
 
-			return !(mSocket.Client.Poll(1000, SelectMode.SelectRead) && mSocket.Client.Available == 0);
+				return !(mSocket.Client.Poll(1000, SelectMode.SelectRead) && mSocket.Client.Available == 0);
+			}
+			catch (System.Exception)
+			{
+
+			}
+
+			return false;
 		}
 
 		public bool IsConnecting()
@@ -237,29 +271,21 @@ namespace AngelScriptHelper
 			{
 				mLastTimeCheckedAlive = DateTime.Now;
 
-				byte[] ReadBuffer = new byte[1024 * 1024];
+				const int MaxBufferSize = 1024 * 1024 * 4;
+				byte[] ReadBuffer = new byte[MaxBufferSize];
+				CUtils.MemSet(ReadBuffer, 0);
 				int NumReceived = 0;
 				while (NumReceived < 4)
 				{
-					try
-					{
-						NumReceived += mSocketStream.Read(ReadBuffer, NumReceived, 4 - NumReceived);
-					}
-					catch (System.Exception)
-					{
-						NumReceived = -1;
-					}
-
-					if (NumReceived < 0)
-						return;
+					NumReceived += mSocketStream.Read(ReadBuffer, NumReceived, 4 - NumReceived);
 				}
 
 				int PacketExpectedSize = (ReadBuffer[0] | (ReadBuffer[1] << 8) | (ReadBuffer[2] << 16) | (ReadBuffer[3] << 24)) + 1;
-
-				if (PacketExpectedSize <= 0 || PacketExpectedSize > 1024 * 1024)
+				if (PacketExpectedSize <= 0 || PacketExpectedSize >= MaxBufferSize)
 					return;
 
 				int Offset = 0;
+				ReadBuffer[0] = ReadBuffer[1] = ReadBuffer[2] = ReadBuffer[3] = 0;
 				while (Offset < PacketExpectedSize)
 				{
 					Offset += mSocketStream.Read(ReadBuffer, Offset, PacketExpectedSize - Offset);
@@ -271,7 +297,7 @@ namespace AngelScriptHelper
 			}
 
 			// Wait a little to emit event diagnostics changed
-			if (bDiagnosticsDirty && (DateTime.Now - mLastTimeDiagnosticsDirty).Seconds > 1 && OnDiagnosticsChanged != null)
+			if (bDiagnosticsDirty && (DateTime.Now - mLastTimeDiagnosticsDirty).Milliseconds > 250 && OnDiagnosticsChanged != null)
 			{
 				OnDiagnosticsChanged.Invoke(this, null);
 				bDiagnosticsDirty = false;
@@ -320,25 +346,34 @@ namespace AngelScriptHelper
 
 		public void Disconnect(bool bNotify)
 		{
-			bIsConnecting = false;
-			DiagnosticsMessageMap.Clear();
-			if (OnDiagnosticsChanged != null)
-				OnDiagnosticsChanged.Invoke(this, null);
-
-			if (IsConnected() && bNotify)
+			try
 			{
-				Send(EMessageType.Disconnect);
+				bIsConnecting = false;
+				bDiagnosticsDirty = false;
+				DiagnosticsMessageMap.Clear();
+				if (OnDiagnosticsChanged != null)
+					OnDiagnosticsChanged.Invoke(this, null);
+
+				if (IsConnected() && bNotify)
+				{
+					Send(EMessageType.Disconnect);
+				}
+
+				if (mSocketStream != null)
+				{
+					mSocketStream.Close();
+					mSocketStream = null;
+				}
+
+				if (mSocket != null)
+				{
+					mSocket.Close();
+					mSocket = null;
+				}
 			}
-
-			if (mSocketStream != null)
+			catch (Exception)
 			{
-				mSocketStream.Close();
 				mSocketStream = null;
-			}
-
-			if (mSocket != null)
-			{
-				mSocket.Close();
 				mSocket = null;
 			}
 		}
@@ -349,20 +384,21 @@ namespace AngelScriptHelper
 		private CDebugClient mDebugClient = new CDebugClient();
 
 		private static CAngelScriptManager mInstance = null;
-		private static SpinLock mInstanceLock = new SpinLock();
-		private static SpinLock mLock = new SpinLock();
+		private static SpinLock mInstanceLock = new SpinLock(false);
+		private static SpinLock mDebugClientLock = new SpinLock(false);
 
 		DateTime LastTimeTryConnect = DateTime.Now;
 
-		public event EventHandler OnDiagnosticsChanged;
+		public event EventHandler OnDiagnosticsChanged = null;
 
 		System.Timers.Timer TickTimer = new System.Timers.Timer();
 
 		private CAngelScriptManager()
 		{
 			TickTimer.Elapsed += new ElapsedEventHandler(OnTimedEvent);
-			TickTimer.Interval = 500;
-			TickTimer.AutoReset = false;
+			TickTimer.Interval = 100;
+			TickTimer.AutoReset = true;
+			TickTimer.Enabled = true;
 			TickTimer.Start();
 
 			mDebugClient.OnDiagnosticsChanged += (s, e) =>
@@ -394,11 +430,18 @@ namespace AngelScriptHelper
 
 		static void OnTimedEvent(object source, ElapsedEventArgs e)
 		{
-			ThreadHelper.JoinableTaskFactory.Run(async delegate
+			try
 			{
-				await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-				Instance().Tick();
-			});
+				ThreadHelper.JoinableTaskFactory.Run(async delegate
+				{
+					await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+					Instance().Tick();
+				});
+			}
+			catch (Exception)
+			{
+
+			}
 		}
 
 		void HandleDiagnosticsChanged(EventArgs e)
@@ -431,23 +474,49 @@ namespace AngelScriptHelper
 
 		void Tick()
 		{
-			if (!mDebugClient.IsConnected())
+			bool bLockTaken = false;
+			try
 			{
-				if ((DateTime.Now - LastTimeTryConnect).Seconds >= 1)
-				{
-					LastTimeTryConnect = DateTime.Now;
-					if (!mDebugClient.IsConnecting())
-					{
-						mDebugClient.Connect("127.0.0.1", 27099);
-					}
-				}
+				mDebugClientLock.TryEnter(ref bLockTaken);
 			}
-			else
+			catch (Exception)
 			{
-				mDebugClient.Tick();
 			}
 
-			TickTimer.Start();
+			if (!bLockTaken)
+				return;
+
+			try
+			{
+				if (!mDebugClient.IsConnected())
+				{
+					if ((DateTime.Now - LastTimeTryConnect).Seconds >= 1)
+					{
+						LastTimeTryConnect = DateTime.Now;
+						if (!mDebugClient.IsConnecting())
+						{
+							mDebugClient.Connect("127.0.0.1", 27099);
+						}
+					}
+				}
+				else
+				{
+					mDebugClient.Tick();
+				}
+			}
+			catch (Exception)
+			{
+				mDebugClient.Disconnect(false);
+			}
+
+			try
+			{
+				mDebugClientLock.Exit();
+			}
+			catch (Exception)
+			{
+
+			}
 		}
 	}
 

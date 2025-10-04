@@ -46,7 +46,7 @@ namespace AngelScriptHelper
 				TextDocumentFactoryService.TryGetTextDocument(textView.TextBuffer, out ITextDocument textDocument))
 			{
 				// Return the file path
-				if (!textDocument.FilePath.EndsWith(".hpp"))
+				if (!textDocument.FilePath.EndsWith(".hpp") && !textDocument.FilePath.EndsWith(".as"))
 					return;
 
 				FilePath = textDocument.FilePath;

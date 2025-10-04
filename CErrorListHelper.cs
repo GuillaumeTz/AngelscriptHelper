@@ -90,33 +90,29 @@ namespace AngelScriptHelper
 			{
 				windowFrame.Show(); // Bring the document to the foreground
 
-				// Get the IVsTextView to move the cursor
-				MoveCursorWithDTE(filePath, line, column);
+                // Get the IVsTextView to move the cursor
+                MoveCursorWithDTE(filePath, line, column);
 			}
 		}
+        private static void MoveCursorWithDTE(string filePath, int line, int column)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
 
-		private static void MoveCursorWithDTE(string filePath, int line, int column)
-		{
-			ThreadHelper.ThrowIfNotOnUIThread();
+            try
+            {
+                DTE2 dte = ServiceProvider.GlobalProvider.GetService(typeof(DTE)) as DTE2;
 
-			DTE2 dte = ServiceProvider.GlobalProvider.GetService(typeof(DTE)) as DTE2;
-			if (dte == null || dte.Documents == null)
-				return;
-
-			// Get the opened document
-			try
-			{
-				Document doc = dte.Documents.Item(filePath);
-				if (doc != null)
-				{
-					TextSelection selection = (TextSelection)doc.Selection;
-					selection.MoveToLineAndOffset(line, column);
-				}
-			}
-			catch (Exception)
-			{
-
-			}
-		}
-	}
+                // Get the active document selection
+                TextSelection selection = (TextSelection)dte.ActiveDocument.Selection;
+                if (selection != null)
+                {
+                    selection.MoveToLineAndOffset(line, column + 1);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("MoveCursorWithDTE failed: " + ex.Message);
+            }
+        }
+    }
 }

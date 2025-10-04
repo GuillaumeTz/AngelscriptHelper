@@ -396,7 +396,7 @@ namespace AngelScriptHelper
 		private CAngelScriptManager()
 		{
 			TickTimer.Elapsed += new ElapsedEventHandler(OnTimedEvent);
-			TickTimer.Interval = 100;
+			TickTimer.Interval = 200;
 			TickTimer.AutoReset = true;
 			TickTimer.Enabled = true;
 			TickTimer.Start();

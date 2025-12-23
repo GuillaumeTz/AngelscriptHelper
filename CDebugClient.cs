@@ -1,15 +1,11 @@
-﻿using Microsoft.VisualStudio.RpcContracts.DiagnosticManagement;
-using Microsoft.VisualStudio.Shell;
+﻿using Microsoft.VisualStudio.Shell;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Linq.Expressions;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Timers;
 
 namespace AngelScriptHelper
 {
@@ -97,8 +93,8 @@ namespace AngelScriptHelper
 	class CMessage
 	{
 		public EMessageType mType;
-		private MemoryStream mStream;
-		private BinaryReader mBinaryReader;
+		private readonly MemoryStream mStream;
+		private readonly BinaryReader mBinaryReader;
 		public CMessage(EMessageType InType, MemoryStream InBuffer)
 		{
 			mType = InType;
@@ -106,13 +102,13 @@ namespace AngelScriptHelper
 			mBinaryReader = new BinaryReader(mStream, Encoding.UTF8);
 		}
 
-		public int readInt() { return mBinaryReader.ReadInt32(); }
-		public bool readBool() 
+		public int ReadInt() { return mBinaryReader.ReadInt32(); }
+		public bool ReadBool() 
 		{ 
 			return mBinaryReader.ReadInt32() != 0; 
 		}
 
-		public string readString() 
+		public string ReadString() 
 		{
 			int Length = mBinaryReader.ReadInt32();
 			string result = new string(mBinaryReader.ReadChars(Length));
@@ -151,24 +147,23 @@ namespace AngelScriptHelper
 		{
 			CDiagnosticsMessage Result = new CDiagnosticsMessage();
 
-			Result.FilePath = Message.readString();
-
+			Result.FilePath = Message.ReadString();
 			Result.FilePath = Result.FilePath.Replace("\\", "/");
 			Result.FilePath = Result.FilePath.Replace("//", "/");
 
-			int msgCount = Message.readInt();
+			int msgCount = Message.ReadInt();
 			for (int i = 0; i < msgCount; ++i)
 			{
-				var message = Message.readString();
-				var line = Message.readInt();
-				var charNum = Message.readInt();
-				var isError = Message.readBool();
-				var isInfo = Message.readBool();
+				string message = Message.ReadString();
+				int line = Message.ReadInt();
+				int charNum = Message.ReadInt();
+				bool isError = Message.ReadBool();
+				bool isInfo = Message.ReadBool();
 
 				if (line <= 0)
 					line = 1;
 
-				var diagnostic = new CAngelscriptDiagnostic();
+				CAngelscriptDiagnostic diagnostic = new CAngelscriptDiagnostic();
 				diagnostic.severity = isInfo ? EDiagnosticSeverity.Information : (isError ? EDiagnosticSeverity.Error : EDiagnosticSeverity.Warning);
 				diagnostic.Start = new STextLocation { LineNumber = line - 1, CharacterInLine = 0 };
 				diagnostic.End = new STextLocation { LineNumber = line - 1, CharacterInLine = 10000 };
@@ -184,7 +179,7 @@ namespace AngelScriptHelper
 
 	class CDebugClient
 	{
-		private TcpClient mSocket = null;
+		private TcpClient mSocketTcpClient = null;
 		private NetworkStream mSocketStream = null;
 		private DateTime mLastTimeCheckedAlive = DateTime.Now;
 		private bool bIsConnecting = false;
@@ -195,38 +190,34 @@ namespace AngelScriptHelper
 		private bool bDiagnosticsDirty = false;
 		private DateTime mLastTimeDiagnosticsDirty = DateTime.Now;
 
-		public void Connect(string HostName, int Port)
+		public void Connect(string HostName, int Port, AsyncCallback OnConnected)
 		{
 			Disconnect(true);
-
-			if (mSocket == null)
-			{
-				mSocket = new TcpClient();
-			}
 
 			try
 			{
 				bIsConnecting = true;
-				mSocket.BeginConnect(HostName, Port, OnConnectAsyncCallback, null);
+				mSocketTcpClient = new TcpClient();
+				mSocketTcpClient.BeginConnect(HostName, Port, (IAsyncResult AsyncResult) => { OnConnectedAsyncCallback(AsyncResult); OnConnected?.Invoke(AsyncResult); }, null);
 			}
 			catch (System.Exception)
 			{
 			}
 		}
-		private void OnConnectAsyncCallback(IAsyncResult AsyncResult)
+		private void OnConnectedAsyncCallback(IAsyncResult AsyncResult)
 		{
 			try
 			{
-				mSocket.EndConnect(AsyncResult);
+				mSocketTcpClient.EndConnect(AsyncResult);
 			}
 			catch (System.Exception)
 			{
 			}
 
 			bIsConnecting = false;
-			if (mSocket.Connected)
+			if (mSocketTcpClient.Connected)
 			{
-				mSocketStream = mSocket.GetStream();
+				mSocketStream = mSocketTcpClient.GetStream();
 				mSocketStream.ReadTimeout = 1;
 			}
 		}
@@ -235,10 +226,10 @@ namespace AngelScriptHelper
 		{
 			try
 			{
-				if (mSocket == null || !mSocket.Connected || mSocketStream == null)
+				if (mSocketTcpClient == null || !mSocketTcpClient.Connected || mSocketStream == null)
 					return false;
 
-				return !(mSocket.Client.Poll(1000, SelectMode.SelectRead) && mSocket.Client.Available == 0);
+				return !(mSocketTcpClient.Client.Poll(1000, SelectMode.SelectRead) && mSocketTcpClient.Client.Available == 0);
 			}
 			catch (System.Exception)
 			{
@@ -346,125 +337,96 @@ namespace AngelScriptHelper
 
 		public void Disconnect(bool bNotify)
 		{
+			bool bHasValue = DiagnosticsMessageMap.Keys.Count > 0;
+			DiagnosticsMessageMap.Clear();
 			try
 			{
-				bIsConnecting = false;
-				bDiagnosticsDirty = false;
-				DiagnosticsMessageMap.Clear();
-				if (OnDiagnosticsChanged != null)
-					OnDiagnosticsChanged.Invoke(this, null);
+				if (bHasValue)
+					OnDiagnosticsChanged?.Invoke(this, null);
 
 				if (IsConnected() && bNotify)
 				{
 					Send(EMessageType.Disconnect);
 				}
 
-				if (mSocketStream != null)
+				if (mSocketTcpClient != null)
 				{
-					mSocketStream.Close();
-					mSocketStream = null;
-				}
-
-				if (mSocket != null)
-				{
-					mSocket.Close();
-					mSocket = null;
+					mSocketTcpClient.Close();
 				}
 			}
 			catch (Exception)
 			{
-				mSocketStream = null;
-				mSocket = null;
+				
 			}
+
+			bIsConnecting = false;
+			bDiagnosticsDirty = false;
+			DiagnosticsMessageMap.Clear();
+			mSocketTcpClient = null;
+			mSocketStream = null;
 		}
 	}
 
 	class CAngelScriptManager
 	{
-		private CDebugClient mDebugClient = new CDebugClient();
+		private readonly CDebugClient mDebugClient = new CDebugClient();
 
 		private static CAngelScriptManager mInstance = null;
-		private static SpinLock mInstanceLock = new SpinLock(false);
-		private static SpinLock mDebugClientLock = new SpinLock(false);
 
-		DateTime LastTimeTryConnect = DateTime.Now;
+		private DateTime LastTimeTryConnect = DateTime.Now;
+		private int CurentDelayBetweenTicks = 5000;
 
 		public event EventHandler OnDiagnosticsChanged = null;
-
-		System.Timers.Timer TickTimer = new System.Timers.Timer();
+		private bool bRunning = false;
 
 		private CAngelScriptManager()
 		{
-			TickTimer.Elapsed += new ElapsedEventHandler(OnTimedEvent);
-			TickTimer.Interval = 200;
-			TickTimer.AutoReset = true;
-			TickTimer.Enabled = true;
-			TickTimer.Start();
-
 			mDebugClient.OnDiagnosticsChanged += (s, e) =>
 			{
-				ThreadHelper.ThrowIfNotOnUIThread();
 				HandleDiagnosticsChanged(e);
 			};
+
+			bRunning = true;
+			ThreadHelper.JoinableTaskFactory.RunAsync(async delegate
+			{
+				await Task.Run(() => MainLoop());
+			});
+		}
+
+		public static void Init()
+		{
+			mInstance = new CAngelScriptManager();
 		}
 
 		public static CAngelScriptManager Instance()
 		{
-			bool bEntered = false;
-			try
-			{
-				mInstanceLock.Enter(ref bEntered);
-				if (mInstance == null)
-				{
-					mInstance = new CAngelScriptManager();
-				}
-			}
-			finally
-			{
-				if (bEntered)
-					mInstanceLock.Exit();
-			}
-
 			return mInstance;
 		}
-
-		static void OnTimedEvent(object source, ElapsedEventArgs e)
-		{
-			try
-			{
-				ThreadHelper.JoinableTaskFactory.Run(async delegate
-				{
-					await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-					Instance().Tick();
-				});
-			}
-			catch (Exception)
-			{
-
-			}
-		}
-
 		void HandleDiagnosticsChanged(EventArgs e)
 		{
-			if (OnDiagnosticsChanged != null)
-				OnDiagnosticsChanged.Invoke(this, e);
+			OnDiagnosticsChanged?.Invoke(this, e);
 
-			CErrorListHelper.Instance().ClearErrors();
-			bool bHasErrors = false;
-			foreach (KeyValuePair<string, CDiagnosticsMessage> DiagnosticPair in mDebugClient.DiagnosticsMessageMap)
+			// launch a task on the main ui thread
+			ThreadHelper.JoinableTaskFactory.Run(async delegate
 			{
-				foreach (CAngelscriptDiagnostic Diagnostic in DiagnosticPair.Value.Diagnostics)
+				await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+				CErrorListHelper.Instance().ClearErrors();
+				bool bHasErrors = false;
+				foreach (KeyValuePair<string, CDiagnosticsMessage> DiagnosticPair in mDebugClient.DiagnosticsMessageMap)
 				{
-					bHasErrors = true;
-					ThreadHelper.ThrowIfNotOnUIThread();
-					CErrorListHelper.Instance().AddError(Diagnostic.message, DiagnosticPair.Value.FilePath, Diagnostic.Start.LineNumber, Diagnostic.Start.CharacterInLine);
+					foreach (CAngelscriptDiagnostic Diagnostic in DiagnosticPair.Value.Diagnostics)
+					{
+						bHasErrors = true;
+						CErrorListHelper.Instance().AddError(Diagnostic.message, DiagnosticPair.Value.FilePath, Diagnostic.Start.LineNumber, Diagnostic.Start.CharacterInLine);
+					}
 				}
-			}
 
-			if (bHasErrors)
-			{
-				CErrorListHelper.Instance().ShowErrorList();
-			}
+				if (bHasErrors)
+				{
+					CErrorListHelper.Instance().ShowErrorList();
+				}
+			});
 		}
 
 		public Dictionary<string, CDiagnosticsMessage>  GetDiagnosticsMessageMap()
@@ -472,31 +434,36 @@ namespace AngelScriptHelper
 			return mDebugClient.DiagnosticsMessageMap;
 		}
 
+		void MainLoop()
+		{
+			while (bRunning)
+			{
+				Thread.Sleep(CurentDelayBetweenTicks);
+				Tick();
+			}
+		}
+
 		void Tick()
 		{
-			bool bLockTaken = false;
-			try
-			{
-				mDebugClientLock.TryEnter(ref bLockTaken);
-			}
-			catch (Exception)
-			{
-			}
-
-			if (!bLockTaken)
-				return;
-
 			try
 			{
 				if (!mDebugClient.IsConnected())
 				{
-					if ((DateTime.Now - LastTimeTryConnect).Seconds >= 1)
+					CurentDelayBetweenTicks = 5000;
+					// Detect if the UnrealEditor.exe process is running
+					bool isUnrealEditorRunning = false;
+					try
 					{
-						LastTimeTryConnect = DateTime.Now;
-						if (!mDebugClient.IsConnecting())
-						{
-							mDebugClient.Connect("127.0.0.1", 27099);
-						}
+						System.Diagnostics.Process[] processes = System.Diagnostics.Process.GetProcessesByName("UnrealEditor");
+						isUnrealEditorRunning = processes != null && processes.Length > 0;
+					}
+					catch (Exception)
+					{
+					}
+
+					if (isUnrealEditorRunning && !mDebugClient.IsConnecting())
+					{
+						mDebugClient.Connect("127.0.0.1", 27099, OnDebugClientConnected);
 					}
 				}
 				else
@@ -508,15 +475,10 @@ namespace AngelScriptHelper
 			{
 				mDebugClient.Disconnect(false);
 			}
-
-			try
-			{
-				mDebugClientLock.Exit();
-			}
-			catch (Exception)
-			{
-
-			}
+		}
+		void OnDebugClientConnected(IAsyncResult _)
+		{
+			CurentDelayBetweenTicks = 200;
 		}
 	}
 

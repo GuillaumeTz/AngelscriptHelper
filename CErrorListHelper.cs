@@ -1,16 +1,6 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
-using Microsoft.VisualStudio.Shell.TableManager;
 using Microsoft.VisualStudio.Shell.Interop;
-using Microsoft.VisualStudio.TextManager.Interop;
-using System.Threading;
-using Microsoft.VisualStudio.ComponentModelHost;
-using Microsoft.VisualStudio.Editor;
 using EnvDTE;
 using EnvDTE80;
 
@@ -40,11 +30,13 @@ namespace AngelScriptHelper
 
 		public void ShowErrorList()
 		{
+			ThreadHelper.ThrowIfNotOnUIThread();
 			_errorListProvider.Show();
 		}
 
 		public void AddError(string message, string filePath, int line, int column)
 		{
+			ThreadHelper.ThrowIfNotOnUIThread();
 			// Create a new error task item
 			ErrorTask errorTask = new ErrorTask
 			{
@@ -59,7 +51,6 @@ namespace AngelScriptHelper
 			// Set navigation action when the user double-clicks the error
 			errorTask.Navigate += (s, e) =>
 			{
-				ThreadHelper.ThrowIfNotOnUIThread();
 				NavigateToFile(filePath, line, column);
 			};
 
@@ -69,6 +60,7 @@ namespace AngelScriptHelper
 
 		public void ClearErrors()
 		{
+			ThreadHelper.ThrowIfNotOnUIThread();
 			_errorListProvider.Tasks.Clear();
 		}
 
@@ -81,38 +73,32 @@ namespace AngelScriptHelper
 				return;
 
 			// Open the document in Visual Studio
-			IVsUIHierarchy hierarchy;
-			uint itemID;
-			IVsWindowFrame windowFrame;
-			VsShellUtilities.OpenDocument(ServiceProvider.GlobalProvider, filePath, Guid.Empty, out hierarchy, out itemID, out windowFrame);
+			VsShellUtilities.OpenDocument(ServiceProvider.GlobalProvider, filePath, Guid.Empty, out IVsUIHierarchy hierarchy, out uint itemID, out IVsWindowFrame windowFrame);
 
 			if (windowFrame != null)
 			{
 				windowFrame.Show(); // Bring the document to the foreground
 
-                // Get the IVsTextView to move the cursor
-                MoveCursorWithDTE(filePath, line, column);
+				// Get the IVsTextView to move the cursor
+				MoveCursorWithDTE(line, column);
 			}
 		}
-        private static void MoveCursorWithDTE(string filePath, int line, int column)
-        {
-            ThreadHelper.ThrowIfNotOnUIThread();
+		private static void MoveCursorWithDTE(int line, int column)
+		{
+			ThreadHelper.ThrowIfNotOnUIThread();
 
-            try
-            {
-                DTE2 dte = ServiceProvider.GlobalProvider.GetService(typeof(DTE)) as DTE2;
+			try
+			{
+				DTE2 dte = ServiceProvider.GlobalProvider.GetService(typeof(DTE)) as DTE2;
 
-                // Get the active document selection
-                TextSelection selection = (TextSelection)dte.ActiveDocument.Selection;
-                if (selection != null)
-                {
-                    selection.MoveToLineAndOffset(line, column + 1);
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine("MoveCursorWithDTE failed: " + ex.Message);
-            }
-        }
-    }
+				// Get the active document selection
+				TextSelection selection = (TextSelection)dte.ActiveDocument.Selection;
+				selection?.MoveToLineAndOffset(line, column + 1);
+			}
+			catch (Exception ex)
+			{
+				System.Diagnostics.Debug.WriteLine("MoveCursorWithDTE failed: " + ex.Message);
+			}
+		}
+	}
 }

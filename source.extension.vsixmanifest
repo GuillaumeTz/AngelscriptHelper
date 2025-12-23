@@ -1,7 +1,7 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
     <Metadata>
-        <Identity Id="AngelScriptHelper.c4935423-2c42-47b2-8d08-e0c8de04d7ab" Version="0.1.0.18" Language="en-US" Publisher="GuillaumeTz" />
+        <Identity Id="AngelScriptHelper.c4935423-2c42-47b2-8d08-e0c8de04d7ab" Version="0.1.0.22" Language="en-US" Publisher="GuillaumeTz" />
         <DisplayName>AngelScriptHelper</DisplayName>
         <Description xml:space="preserve">Support for receiving AngelScript compilation errors.</Description>
     </Metadata>
